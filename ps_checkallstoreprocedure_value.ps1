@@ -1,19 +1,27 @@
 # 1. 設定連線資訊
-$SqlServer = "YourServerName"        # 替換為您的 SQL Server 實例名稱
-$SqlDatabase = "YourDatabaseName"    # 替換為您的資料庫名稱
+$SqlServer = "YourServerName"        # <--- 請替換這裡
+$SqlDatabase = "YourDatabaseName"    # <--- 請替換這裡
 
 # 2. 設定要查找的欄位名稱 (Column Name)
-$TargetColumn = "YourColumnName"
+$TargetColumn = "YourColumnName"     # <--- 請替換這裡
 
 Write-Host "--- 連線至 $SqlServer 資料庫 $SqlDatabase，檢查欄位：$TargetColumn ---"
 
 # 3. 定義 SQL 查詢：取得所有使用者 Schema 的名稱
-$SchemaQuery = "SELECT name AS SchemaName FROM sys.schemas WHERE schema_id < 16384 AND name NOT IN ('guest')"
+$SchemaQuery = @"
+SELECT 
+    name AS SchemaName
+FROM 
+    sys.schemas 
+WHERE 
+    schema_id < 16384 
+    AND name NOT IN ('guest');
+"@
 
 Write-Host "Retrieving Schemas..."
 try {
-    # 執行 Schema 查詢並儲存結果
-    $AllSchemas = Invoke-Sqlcmd -ServerInstance $SqlServer -Database $SqlDatabase -Query $SchemaQuery
+    # **** 關鍵修正：加入 -TrustServerCertificate 參數 ****
+    $AllSchemas = Invoke-Sqlcmd -ServerInstance $SqlServer -Database $SqlDatabase -Query $SchemaQuery -TrustServerCertificate 
     
     if (-not $AllSchemas) {
         Write-Host "❌ No user schemas found." -ForegroundColor Red
@@ -32,7 +40,6 @@ foreach ($Schema in $AllSchemas) {
     $CurrentSchemaName = $Schema.SchemaName
     
     # 構建用於檢查 SP 的 SQL 查詢
-    # 關鍵：加入 WHERE 條件來篩選當前正在檢查的 Schema
     $SqlQuery = @"
 SELECT
     OBJECT_SCHEMA_NAME(m.object_id) AS [Schema Name],
@@ -43,23 +50,18 @@ JOIN
     sys.objects o ON m.object_id = o.object_id
 WHERE
     o.type = 'P' 
-    AND OBJECT_SCHEMA_NAME(m.object_id) = N'$CurrentSchemaName' -- *** 篩選當前 Schema ***
+    AND OBJECT_SCHEMA_NAME(m.object_id) = N'$CurrentSchemaName' 
     AND m.is_encrypted = 0 
     AND CAST(m.definition AS NVARCHAR(MAX)) LIKE N'%$TargetColumn%';
 "@
 
-    # 執行查詢
+    # 執行查詢，同樣加入 -TrustServerCertificate
     try {
-        $Results = Invoke-Sqlcmd -ServerInstance $SqlServer -Database $SqlDatabase -Query $SqlQuery
+        $Results = Invoke-Sqlcmd -ServerInstance $SqlServer -Database $SqlDatabase -Query $SqlQuery -TrustServerCertificate
         
         if ($Results) {
             Write-Host "`n🌟 FOUND in Schema: [$CurrentSchemaName] 🌟" -ForegroundColor Yellow
-            # 輸出結果
             $Results | Format-Table -AutoSize
-        }
-        else {
-            # 簡潔輸出：如果找不到則不輸出
-            # Write-Host "  . Column '$TargetColumn' was NOT found in any SPs in [$CurrentSchemaName]."
         }
     }
     catch {
