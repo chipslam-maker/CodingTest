@@ -74,7 +74,6 @@ foreach ($Server in $ServerList) {
     }
 }
 
-
 # --- 4. 計算並顯示差值 (數據分析) ---
 
 Write-Host "`n--- 數據分析與比較 ---" -ForegroundColor DarkCyan
@@ -94,6 +93,11 @@ $ID2 = $AllResults[1].LAST_ID
 # 計算兩者之間的絕對差值
 $Difference = [math]::Abs($ID1 - $ID2)
 
+# 🌟 新增步驟：計算所需批次數量 🌟
+$BatchSize = 5000
+$BatchCount = [System.Math]::Ceiling($Difference / $BatchSize)
+
+
 # --- 輸出最終結果 ---
 Write-Host "`n=======================================================" -ForegroundColor Cyan
 Write-Host "🎯 ID 比較報告" -ForegroundColor Cyan
@@ -101,9 +105,23 @@ Write-Host "=======================================================" -Foreground
 Write-Host "伺服器 1 ($Server1Name) LAST_ID: $($ID1)" -ForegroundColor White
 Write-Host "伺服器 2 ($Server2Name) LAST_ID: $($ID2)" -ForegroundColor White
 Write-Host "-------------------------------------------------------" -ForegroundColor DarkCyan
-# 使用 -f 格式化運算符，並使用 {0:N0} 來添加千位分隔符
+
+# 格式化輸出差值
 Write-Host ("兩者之間的絕對差值 (Difference): {0:N0}" -f $Difference) -ForegroundColor Red
+
+# 輸出批次計算結果
+Write-Host "批次大小 (Batch Size): $($BatchSize) 行" -ForegroundColor White
+Write-Host "需要的批次數量 (Batches Required): $($BatchCount) 次 (使用無條件進位)" -ForegroundColor Magenta
+
 Write-Host "=======================================================" -ForegroundColor Cyan
 
 # 輸出詳細的結果物件 (供管線或其他腳本調用)
-return $AllResults | Select-Object ServerInstance, LAST_ID, Status
+# 您可能也想將 BatchCount 加入輸出物件中
+[PSCustomObject]@{
+    Server1 = $Server1Name
+    ID1 = $ID1
+    Server2 = $Server2Name
+    ID2 = $ID2
+    Difference = $Difference
+    BatchCount = $BatchCount
+}
