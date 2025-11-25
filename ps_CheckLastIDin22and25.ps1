@@ -101,7 +101,8 @@ Write-Host "=======================================================" -Foreground
 Write-Host "伺服器 1 ($Server1Name) LAST_ID: $($ID1)" -ForegroundColor White
 Write-Host "伺服器 2 ($Server2Name) LAST_ID: $($ID2)" -ForegroundColor White
 Write-Host "-------------------------------------------------------" -ForegroundColor DarkCyan
-Write-Host "兩者之間的絕對差值 (Difference): $($Difference)" -ForegroundColor Red
+# 使用 -f 格式化運算符，並使用 {0:N0} 來添加千位分隔符
+Write-Host ("兩者之間的絕對差值 (Difference): {0:N0}" -f $Difference) -ForegroundColor Red
 Write-Host "=======================================================" -ForegroundColor Cyan
 
 # 輸出詳細的結果物件 (供管線或其他腳本調用)
