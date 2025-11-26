@@ -1,8 +1,8 @@
 # ==============================================================================
-# Script Name: Final_Continuous_Monitoring_CSV_Delta.ps1
+# Script Name: Final_Continuous_Monitoring_Consolidated.ps1
 # Description: Periodically monitors two SQL Server instances. Tracks LAST_ID 
 #              Difference and ID Delta since the last run by reading the last entry 
-#              from the history CSV log file.
+#              from the history CSV log file. All SQL Job checks have been removed.
 # Execution Frequency: Every 5 minutes (300 seconds).
 # ==============================================================================
 
@@ -29,22 +29,19 @@ $BatchSize = 5000
 
 # --- B. Parameters for Logging (Persistence) ---
 # File to store the historical execution report (CSV format - Appends new data)
-# This file is now also used to retrieve the previous ID for delta calculation.
+# This file is also used to retrieve the previous ID for delta calculation.
 # Ensure the directory exists (e.g., C:\Logs)
 $LogFile = "C:\Logs\Monitoring_Report_History.csv" 
 
 # --- Helper Functions for Persistence ---
 
-# 🌟 NEW Function: Read the LAST_ID from the last entry of the CSV log file
+# Function: Read the LAST_ID from the last entry of the CSV log file
 function Get-PreviousLastIDsFromLog {
     param([Parameter(Mandatory=$true)][string]$Path)
     if (Test-Path $Path) {
         try {
-            # Read the entire CSV file, select the last object, and return it
-            # Skips the first line if it's the header, ensuring we get the last data row.
             $LogContent = Import-Csv $Path
             
-            # Check if log content is empty (except for header)
             if ($LogContent.Count -eq 0) {
                 Write-Warning " [WARNING] Log file found, but contains no previous data."
                 return $null
@@ -83,7 +80,7 @@ while ($true) {
     
     # --- 3. Execution Setup and ID Query ---
     
-    # 🌟 NEW: Read the last log entry for delta calculation
+    # Read the last log entry for delta calculation
     $PreviousLogEntry = Get-PreviousLastIDsFromLog -Path $LogFile
     if ($PreviousLogEntry -eq $null) {
         Write-Warning " [WARNING] No previous ID history found. Delta calculation will be skipped for this run."
@@ -105,7 +102,7 @@ while ($true) {
         }
     }
     
-    # 3b. Job Placeholder (for merged output format compatibility)
+    # Job Placeholder (for merged output format compatibility)
     $JobResults = @(
         [PSCustomObject]@{ServerInstance = $ServerList[0]; LastRun = "N/A"; Duration = "N/A"; Status = "Removed"},
         [PSCustomObject]@{ServerInstance = $ServerList[1]; LastRun = "N/A"; Duration = "N/A"; Status = "Removed"}
@@ -120,7 +117,7 @@ while ($true) {
         Write-Warning "【WARNING】Comparison may be inaccurate due to connection/query failure on at least one server."
     } else {
         
-        # 🌟 Delta Calculation Setup 🌟
+        # Delta Calculation Setup
         $Increase1 = 0; $Increase2 = 0
         
         # Data Extraction
@@ -132,8 +129,6 @@ while ($true) {
         $Increase2Output = " (No previous data)"
         
         if ($PreviousLogEntry) {
-            # Map the previous ID fields from the log to the current server instances
-            # NOTE: We must ensure Server1/Server2 in the log match $ServerList[0] and $ServerList[1]
             
             # Server 1 Delta
             $PrevID1 = if ($PreviousLogEntry.Server1 -eq $Server1Name) { [long]$PreviousLogEntry.ID1 } else { [long]$PreviousLogEntry.ID2 }
@@ -182,8 +177,10 @@ while ($true) {
             AbsoluteDifference = $Difference
             BatchCount = $BatchCount
         }
-        # Use Export-Csv with -Append to write the new record to the end of the file
-        $LogEntry | Export-Csv $LogFile -Append -NoTypeInformation -Force
+        
+        # 🌟 應用修正：使用 -InputObject 避免管線解析錯誤 🌟
+        Export-Csv -Path $LogFile -InputObject $LogEntry -Append -NoTypeInformation -Force
+        
         Write-Host " [INFO] Report summary appended to log file: $LogFile" -ForegroundColor DarkGreen
 
     } else {
