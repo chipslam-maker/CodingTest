@@ -84,3 +84,25 @@ WHERE
     AND td.EndTime IS NOT NULL
 ORDER BY
     td.StartTime;
+
+
+SELECT
+    t.LogMessage,
+    -- 1. 使用 PATINDEX 找到 "Elapsed time: " 之後的位置
+    PATINDEX('%Elapsed time: [0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]%', t.LogMessage) AS StartPosition,
+    -- 2. 由於時間長度固定為 12 個字元 (HH:MM:SS.mmm)
+    SUBSTRING(
+        t.LogMessage,
+        -- 計算提取的開始位置：PATINDEX 找到第一個數字的位置
+        PATINDEX('%[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]%', t.LogMessage),
+        -- 時間長度固定為 12
+        12
+    ) AS ExtractedTime
+FROM
+    (VALUES
+        (1, 'XXXX Elapsed time: 00:00:23.019'),
+        (2, 'YYYY Elapsed time: 01:15:45.999'),
+        (3, 'No time here.')
+    ) AS t (ID, LogMessage)
+WHERE
+    t.LogMessage LIKE '%Elapsed time: [0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]%';
