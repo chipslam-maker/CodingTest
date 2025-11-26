@@ -1,3 +1,6 @@
+/* ##################################################################################### */
+/* ##################################################################################### */
+/* ##################################################################################### */
 -- 步驟 1: 在 SSISDB 中找到最近一次執行記錄的 ID
 USE SSISDB;
 GO
@@ -16,37 +19,29 @@ WHERE
     -- AND project_name = N'YourProjectName' 
 ORDER BY
     start_time DESC;
-
+/* ##################################################################################### */
+/* ##################################################################################### */
+/* ##################################################################################### */
 USE SSISDB;
 GO
 
--- 步驟 1: 找出所有相關的 Execution ID (包含頂層和所有子 Package)
-WITH RelevantExecutions AS (
-    SELECT
-        execution_id
-    FROM
-        [catalog].[executions]
-    WHERE
-        execution_id = 10099 -- <<-- [重要] 請將此替換為你的頂層 Package 的 Execution ID
-    UNION ALL
-    SELECT
-        execution_id
-    FROM
-        [catalog].[executions]
-    WHERE
-        parent_id = 10099 -- <<-- 取得所有直接的子 Package
-        -- 如果你的巢狀層級很深，可能需要使用遞迴 CTE (RECURSIVE CTE)
-),
--- 步驟 2: 取得所有相關 Execution 的 Task Start (130) 和 Task End (140) 事件
-TaskEvents AS (
+-- 1. 找到 主 Package 的最新 Execution ID (假設名稱是 '主TASK.dtsx')
+DECLARE @TopExecutionId BIGINT;
+SELECT TOP 1 @TopExecutionId = execution_id
+FROM [catalog].[executions]
+WHERE package_name LIKE '主TASK.dtsx%' -- 調整為你的實際 Package 文件名
+ORDER BY start_time DESC;
+
+-- 2. 取得該 Execution ID 下所有 Task (包括主和子 Package 內的 Task) 的 Start/End 事件
+WITH TaskEvents AS (
     SELECT
         em.operation_id,
         em.message_source_name AS TaskName, -- Task 名稱
-        ex.package_name AS PackageName,     -- 正在執行的 Package 名稱
+        ex.package_name AS PackageName,     -- 主 Package 名稱 ('主TASK.dtsx')
         em.message_time,
         CASE em.message_type
-            WHEN 130 THEN 'START'
-            WHEN 140 THEN 'END'
+            WHEN 130 THEN 'START' -- Task Start
+            WHEN 140 THEN 'END'   -- Task End
             ELSE NULL
         END AS EventType
     FROM
@@ -54,17 +49,17 @@ TaskEvents AS (
     INNER JOIN
         [catalog].[executions] ex ON em.operation_id = ex.execution_id
     WHERE
-        em.operation_id IN (SELECT execution_id FROM RelevantExecutions)
-        AND em.message_type IN (130, 140) -- 篩選 Task Start 和 Task End 事件
+        em.operation_id = @TopExecutionId
+        AND em.message_type IN (130, 140)
 ),
--- 步驟 3: 使用 Window Function (LEAD) 將 Task Start 和 Task End 時間配對
+-- 3. 使用 LEAD 將 Task Start 和 Task End 時間配對
 TaskDurations AS (
     SELECT
         operation_id,
         PackageName,
         TaskName,
         message_time AS StartTime,
-        -- 使用 LEAD 函數取得同一個 Task 的下一個事件時間 (預期為 END)
+        -- 使用 LEAD 函數取得同一個 Task 名稱的下一個事件時間
         LEAD(message_time, 1) OVER (
             PARTITION BY operation_id, TaskName
             ORDER BY message_time
@@ -73,19 +68,19 @@ TaskDurations AS (
     FROM
         TaskEvents
 )
--- 步驟 4: 輸出最終結果 (只保留 Start 行，並計算持續時間)
+-- 4. 輸出最終結果
 SELECT
     td.operation_id AS ExecutionID,
-    td.PackageName,
+    td.PackageName AS MasterPackage,
+    -- 由於子 Package 的 Task 也在這裡，TaskName 可能是來自 主TASK 或 SUB TASK
     td.TaskName,
     td.StartTime,
     td.EndTime,
-    CAST(DATEDIFF(MILLISECOND, td.StartTime, td.EndTime) / 1000.0 AS DECIMAL(10, 3)) AS Duration_Seconds,
-    DATEDIFF(MINUTE, td.StartTime, td.EndTime) AS Duration_Minutes
+    CAST(DATEDIFF(MILLISECOND, td.StartTime, td.EndTime) / 1000.0 AS DECIMAL(10, 3)) AS Duration_Seconds
 FROM
     TaskDurations td
 WHERE
     td.EventType = 'START'
-    AND td.EndTime IS NOT NULL -- 確保 Task 有結束時間
+    AND td.EndTime IS NOT NULL
 ORDER BY
     td.StartTime;
