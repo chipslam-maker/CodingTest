@@ -17,27 +17,75 @@ WHERE
 ORDER BY
     start_time DESC;
 
-
--- 步驟 2: 使用 execution_id 查詢所有子 Package 的執行時間
 USE SSISDB;
 GO
 
-DECLARE @TargetExecutionId BIGINT = 12345; -- **<<-- 請替換成你在步驟 1 找到的 ID**
-
+-- 步驟 1: 找出所有相關的 Execution ID (包含頂層和所有子 Package)
+WITH RelevantExecutions AS (
+    SELECT
+        execution_id
+    FROM
+        [catalog].[executions]
+    WHERE
+        execution_id = 10099 -- <<-- [重要] 請將此替換為你的頂層 Package 的 Execution ID
+    UNION ALL
+    SELECT
+        execution_id
+    FROM
+        [catalog].[executions]
+    WHERE
+        parent_id = 10099 -- <<-- 取得所有直接的子 Package
+        -- 如果你的巢狀層級很深，可能需要使用遞迴 CTE (RECURSIVE CTE)
+),
+-- 步驟 2: 取得所有相關 Execution 的 Task Start (130) 和 Task End (140) 事件
+TaskEvents AS (
+    SELECT
+        em.operation_id,
+        em.message_source_name AS TaskName, -- Task 名稱
+        ex.package_name AS PackageName,     -- 正在執行的 Package 名稱
+        em.message_time,
+        CASE em.message_type
+            WHEN 130 THEN 'START'
+            WHEN 140 THEN 'END'
+            ELSE NULL
+        END AS EventType
+    FROM
+        [catalog].[event_messages] em
+    INNER JOIN
+        [catalog].[executions] ex ON em.operation_id = ex.execution_id
+    WHERE
+        em.operation_id IN (SELECT execution_id FROM RelevantExecutions)
+        AND em.message_type IN (130, 140) -- 篩選 Task Start 和 Task End 事件
+),
+-- 步驟 3: 使用 Window Function (LEAD) 將 Task Start 和 Task End 時間配對
+TaskDurations AS (
+    SELECT
+        operation_id,
+        PackageName,
+        TaskName,
+        message_time AS StartTime,
+        -- 使用 LEAD 函數取得同一個 Task 的下一個事件時間 (預期為 END)
+        LEAD(message_time, 1) OVER (
+            PARTITION BY operation_id, TaskName
+            ORDER BY message_time
+        ) AS EndTime,
+        EventType
+    FROM
+        TaskEvents
+)
+-- 步驟 4: 輸出最終結果 (只保留 Start 行，並計算持續時間)
 SELECT
-    t1.package_name AS PackageName,
-    t1.executable_name AS ExecutableTaskName, -- 執行這個 Package 的 SSIS Task 名稱 (例如: Execute Package Task)
-    t1.start_time AS StartTime,
-    t1.end_time AS EndTime,
-    -- 計算持續時間 (以秒為單位)
-    DATEDIFF(SECOND, t1.start_time, t1.end_time) AS Duration_Seconds,
-    t1.status AS ExecutionStatus
+    td.operation_id AS ExecutionID,
+    td.PackageName,
+    td.TaskName,
+    td.StartTime,
+    td.EndTime,
+    CAST(DATEDIFF(MILLISECOND, td.StartTime, td.EndTime) / 1000.0 AS DECIMAL(10, 3)) AS Duration_Seconds,
+    DATEDIFF(MINUTE, td.StartTime, td.EndTime) AS Duration_Minutes
 FROM
-    catalog.executables t1
+    TaskDurations td
 WHERE
-    t1.execution_id = @TargetExecutionId
-    -- 篩選出你感興趣的子 Package (Package Name 會是子 Package 的名稱)
-    AND t1.package_name <> N'MasterPackageName.dtsx' 
-    -- 狀態: 4=成功(Success), 6=失敗(Failure)
+    td.EventType = 'START'
+    AND td.EndTime IS NOT NULL -- 確保 Task 有結束時間
 ORDER BY
-    t1.start_time;
+    td.StartTime;
