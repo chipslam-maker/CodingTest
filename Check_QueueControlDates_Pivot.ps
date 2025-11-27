@@ -1,0 +1,149 @@
+-- 請在你的本地 (Local) SQL Server 目標資料庫中執行
+
+CREATE TABLE dbo.QueueControlDates_Pivot (
+    -- 1. 你的新欄位：自動遞增的 SEQUENCE (SEQ)
+    SEQ INT IDENTITY(1,1) PRIMARY KEY, 
+    
+    -- 2. 共享的識別欄位
+    tablename NVARCHAR(255) NOT NULL,
+    src NVARCHAR(255) NOT NULL, -- 記錄這是哪個主要SRC的表
+    
+    -- 3. 重塑後的處理時間欄位 (根據資料庫名稱命名，請替換為你的實際資料庫名稱)
+    SOURCE_DB_A_lastprocessingdatetime DATETIME NULL, -- 例如: DB_NAME_A_lastprocessingdatetime
+    SOURCE_DB_B_lastprocessingdatetime DATETIME NULL, -- 例如: DB_NAME_B_lastprocessingdatetime
+    
+    -- 4. 插入時間 (insertdatetime)
+    insertdatetime DATETIME DEFAULT GETDATE() NOT NULL,
+    
+    -- 唯一約束：確保同一個 src/tablename 組合只有一條記錄
+    CONSTRAINT UQ_TableSrc UNIQUE (tablename, src)
+);
+
+# 設定同步間隔 (單位：秒)
+$SleepSeconds = 300 
+
+# 設定資料庫連線變數
+# -----------------------------------------------------------
+$LocalServer = "你的本地伺服器名稱\實例名稱" 
+$LocalDB = "你的目標資料庫名稱"          
+$DestTable = "QueueControlDates_Pivot"
+
+# 你的兩個來源伺服器列表 (請替換實際名稱和資料庫名稱)
+$RemoteServers = @(
+    @{ ServerName = "SOURCE_SERVER_A"; DatabaseName = "DB_NAME_A"; PivotColumn = "SOURCE_DB_A_lastprocessingdatetime" }, 
+    @{ ServerName = "SOURCE_SERVER_B"; DatabaseName = "DB_NAME_B"; PivotColumn = "SOURCE_DB_B_lastprocessingdatetime" }
+)
+
+# 從來源提取資料的 T-SQL 查詢
+$Query = "SELECT src, tablename, lastprocessingdatetime FROM dbo.QueueControlDates"
+
+# -----------------------------------------------------------
+
+# 無限迴圈開始
+while ($true) {
+    Write-Host "--- [$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Starting Consolidating Synchronization. ---"
+    
+    $AllSourceData = @()
+
+    # 1. 提取並標記所有來源資料
+    foreach ($Remote in $RemoteServers) {
+        try {
+            Write-Host "  -> Fetching data from $($Remote.ServerName)"
+            $RemoteData = Invoke-Sqlcmd -ServerInstance $Remote.ServerName -Database $Remote.DatabaseName -Query $Query -ErrorAction Stop
+            
+            # 將 PivotColumn 名稱添加到每個物件中
+            $RemoteData | Add-Member -MemberType NoteProperty -Name "PivotColumn" -Value $Remote.PivotColumn -PassThru | Out-Null
+            
+            $AllSourceData += $RemoteData
+        }
+        catch {
+            Write-Error "Error fetching data from $($Remote.ServerName): $($_.Exception.Message)"
+        }
+    }
+
+    # 2. 在 PowerShell 中將資料樞紐分析 (Pivot)
+    $PivotedRecords = $AllSourceData | Group-Object -Property @('src', 'tablename') | ForEach-Object {
+        
+        $Record = [PSCustomObject]@{
+            src = $_.Group[0].src
+            tablename = $_.Group[0].tablename
+            DB_A_Time = $null
+            DB_B_Time = $null
+        }
+
+        # 遍歷群組中的所有記錄 (最多兩筆)
+        foreach ($Item in $_.Group) {
+            # 根據 PivotColumn 標籤設置對應的時間欄位
+            if ($Item.PivotColumn -eq $RemoteServers[0].PivotColumn) { # Server A
+                $Record.DB_A_Time = $Item.lastprocessingdatetime
+            }
+            if ($Item.PivotColumn -eq $RemoteServers[1].PivotColumn) { # Server B
+                $Record.DB_B_Time = $Item.lastprocessingdatetime
+            }
+        }
+        
+        return $Record
+    }
+    
+    Write-Host "  -> Successfully pivoted $($PivotedRecords.Count) unique records."
+
+    # 3. 執行單次資料庫操作 (單獨執行每個已樞紐分析的記錄的 MERGE)
+    $LocalConn = New-Object System.Data.SqlClient.SqlConnection
+    $LocalConn.ConnectionString = "Server=$LocalServer;Database=$LocalDB;Integrated Security=True;" 
+
+    try {
+        $LocalConn.Open()
+        
+        $RowCount = 0
+        foreach ($Record in $PivotedRecords) {
+            
+            # 使用 MERGE 語句實現 UPSERT
+            $MergeSql = @"
+MERGE INTO dbo.$DestTable AS Target
+USING (SELECT 
+            @src AS src, 
+            @table AS tablename, 
+            @time_A AS time_A, 
+            @time_B AS time_B
+       ) AS Source
+ON (Target.tablename = Source.tablename AND Target.src = Source.src)
+WHEN MATCHED THEN
+    -- 如果記錄存在，更新兩個時間欄位和 insertdatetime
+    UPDATE SET 
+        Target.$($RemoteServers[0].PivotColumn) = Source.time_A,
+        Target.$($RemoteServers[1].PivotColumn) = Source.time_B,
+        Target.insertdatetime = GETDATE()
+WHEN NOT MATCHED BY TARGET THEN
+    -- 如果記錄不存在，插入一個新記錄
+    INSERT (tablename, src, $($RemoteServers[0].PivotColumn), $($RemoteServers[1].PivotColumn), insertdatetime)
+    VALUES (Source.tablename, Source.src, Source.time_A, Source.time_B, GETDATE());
+"@
+            # 準備並執行指令
+            $LocalCmd = New-Object System.Data.SqlClient.SqlCommand
+            $LocalCmd.Connection = $LocalConn
+            $LocalCmd.CommandText = $MergeSql
+            
+            # 定義參數
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@src", [System.Data.SqlDbType]::NVarChar, 255)).Value = $Record.src
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@table", [System.Data.SqlDbType]::NVarChar, 255)).Value = $Record.tablename
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@time_A", [System.Data.SqlDbType]::DateTime)).Value = $Record.DB_A_Time
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@time_B", [System.Data.SqlDbType]::DateTime)).Value = $Record.DB_B_Time
+            
+            $LocalCmd.ExecuteNonQuery() | Out-Null
+            $RowCount++
+        }
+        
+        Write-Host "  -> Successfully performed MERGE on $RowCount consolidated records."
+    }
+    catch {
+        Write-Error "Database MERGE failed: $($_.Exception.Message). Retrying after sleep..."
+    }
+    finally {
+        if ($LocalConn -ne $null -and $LocalConn.State -eq [System.Data.ConnectionState]::Open) {
+            $LocalConn.Close()
+        }
+    }
+    
+    Write-Host "Sleeping for $SleepSeconds seconds..."
+    Start-Sleep $SleepSeconds
+}
