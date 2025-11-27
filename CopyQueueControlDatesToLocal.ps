@@ -20,81 +20,98 @@ CREATE TABLE dbo.QueueControlDates_Consolidated (
 CREATE NONCLUSTERED INDEX IX_QueueControlDates_Consolidated_SrcTable
 ON dbo.QueueControlDates_Consolidated (src, tablename, SOURCE_DB_NAME);
 
-# 設定變數
+
+# 設定同步間隔 (單位：秒)
+$SleepSeconds = 300 # 5 分鐘 = 300 秒
+
+# 設定資料庫連線變數
 # -----------------------------------------------------------
-$LocalServer = "你的本地伺服器名稱\實例名稱"
-$LocalDB = "你的目標資料庫名稱"
+$LocalServer = "你的本地伺服器名稱\實例名稱" 
+$LocalDB = "你的目標資料庫名稱"          
 $DestTable = "QueueControlDates_Consolidated"
 
-# 你的兩個來源伺服器列表
-# 現在 RemoteServers 字典中需要包含 DatabaseName
+# 你的兩個來源伺服器列表 (請替換實際名稱)
 $RemoteServers = @(
-    @{ ServerName = "SOURCE_SERVER_A"; DatabaseName = "DB_NAME_A" }, # <<-- 請替換為 Server A 的資料庫名稱
-    @{ ServerName = "SOURCE_SERVER_B"; DatabaseName = "DB_NAME_B" }  # <<-- 請替換為 Server B 的資料庫名稱
+    @{ ServerName = "SOURCE_SERVER_A"; DatabaseName = "DB_NAME_A" }, 
+    @{ ServerName = "SOURCE_SERVER_B"; DatabaseName = "DB_NAME_B" }
 )
 
-# 從來源提取資料的 T-SQL 查詢 (不變)
+# 從來源提取資料的 T-SQL 查詢
 $Query = "SELECT src, tablename, lastprocessingdatetime FROM dbo.QueueControlDates"
 
-# [更新] 本地插入的 T-SQL 語句，現在包含 SOURCE_DB_NAME
+# 本地插入的 T-SQL 語句 (包含 Sequence, data_inserttime, SOURCE_DB_NAME)
 $InsertSql = "INSERT INTO dbo.$DestTable (src, tablename, lastprocessingdatetime, SOURCE_DB_NAME) VALUES (@src, @table, @time, @db_name)"
 
 # -----------------------------------------------------------
 
-# 建立本地伺服器連線物件
-$LocalConn = New-Object System.Data.SqlClient.SqlConnection
-$LocalConn.ConnectionString = "Server=$LocalServer;Database=$LocalDB;Integrated Security=True;" 
-
-try {
-    $LocalConn.Open()
+# 無限迴圈開始：確保腳本持續運行
+while ($true) {
+    $StartTime = Get-Date
+    Write-Host "--- [$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Starting synchronization loop. ---"
     
-    foreach ($Remote in $RemoteServers) {
-        Write-Host "--- Processing $($Remote.ServerName) / $($Remote.DatabaseName) ---"
-        
-        # 1. 從遠程伺服器提取資料
-        try {
-            $Data = Invoke-Sqlcmd -ServerInstance $Remote.ServerName -Database $Remote.DatabaseName -Query $Query -ErrorAction Stop
-        }
-        catch {
-            Write-Error "Error fetching data from $($Remote.ServerName): $($_.Exception.Message)"
-            continue
-        }
+    # 建立本地伺服器連線物件
+    $LocalConn = New-Object System.Data.SqlClient.SqlConnection
+    $LocalConn.ConnectionString = "Server=$LocalServer;Database=$LocalDB;Integrated Security=True;" 
 
-        # 2. 準備本地插入指令
-        $LocalCmd = New-Object System.Data.SqlClient.SqlCommand
-        $LocalCmd.Connection = $LocalConn
-        $LocalCmd.CommandText = $InsertSql
+    try {
+        # 嘗試開啟本地連線
+        $LocalConn.Open()
         
-        # 定義參數 (並新增 @db_name 參數)
-        $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@src", [System.Data.SqlDbType]::NVarChar, 255)) | Out-Null
-        $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@table", [System.Data.SqlDbType]::NVarChar, 255)) | Out-Null
-        $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@time", [System.Data.SqlDbType]::DateTime)) | Out-Null
-        # [新增] 
-        $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@db_name", [System.Data.SqlDbType]::NVarChar, 128)) | Out-Null
-        
-        $RowCount = 0
-        
-        # 3. 執行插入操作
-        foreach ($Row in $Data) {
-            $LocalCmd.Parameters["@src"].Value = $Row.src
-            $LocalCmd.Parameters["@table"].Value = $Row.tablename
-            $LocalCmd.Parameters["@time"].Value = $Row.lastprocessingdatetime
-            # [新增] 傳入當前遠端資料庫的名稱
-            $LocalCmd.Parameters["@db_name"].Value = $Remote.DatabaseName 
+        foreach ($Remote in $RemoteServers) {
+            Write-Host "  -> Processing $($Remote.ServerName) / $($Remote.DatabaseName)"
             
-            $LocalCmd.ExecuteNonQuery() | Out-Null
-            $RowCount++
+            # 1. 從遠程伺服器提取資料
+            try {
+                # 使用 Invoke-Sqlcmd 提取資料
+                $Data = Invoke-Sqlcmd -ServerInstance $Remote.ServerName -Database $Remote.DatabaseName -Query $Query -ErrorAction Stop
+            }
+            catch {
+                Write-Error "Error fetching data from $($Remote.ServerName): $($_.Exception.Message)"
+                continue # 跳過此伺服器，繼續下一個
+            }
+
+            # 2. 準備本地插入指令
+            $LocalCmd = New-Object System.Data.SqlClient.SqlCommand
+            $LocalCmd.Connection = $LocalConn
+            $LocalCmd.CommandText = $InsertSql
+            
+            # 定義參數
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@src", [System.Data.SqlDbType]::NVarChar, 255)) | Out-Null
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@table", [System.Data.SqlDbType]::NVarChar, 255)) | Out-Null
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@time", [System.Data.SqlDbType]::DateTime)) | Out-Null
+            $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@db_name", [System.Data.SqlDbType]::NVarChar, 128)) | Out-Null
+            
+            $RowCount = 0
+            
+            # 3. 執行插入操作
+            foreach ($Row in $Data) {
+                $LocalCmd.Parameters["@src"].Value = $Row.src
+                $LocalCmd.Parameters["@table"].Value = $Row.tablename
+                $LocalCmd.Parameters["@time"].Value = $Row.lastprocessingdatetime
+                $LocalCmd.Parameters["@db_name"].Value = $Remote.DatabaseName 
+                
+                $LocalCmd.ExecuteNonQuery() | Out-Null
+                $RowCount++
+            }
+            
+            Write-Host "  -> Successfully inserted $RowCount rows from $($Remote.DatabaseName)."
         }
-        
-        Write-Host "Successfully inserted $RowCount rows from $($Remote.ServerName) / $($Remote.DatabaseName)."
     }
-}
-catch {
-    Write-Error "Database connection or execution failed: $($_.Exception.Message)"
-}
-finally {
-    # 關閉連線
-    if ($LocalConn -ne $null -and $LocalConn.State -eq [System.Data.ConnectionState]::Open) {
-        $LocalConn.Close()
+    catch {
+        Write-Error "Main execution failed: $($_.Exception.Message). Retrying after sleep..."
     }
+    finally {
+        # 關閉本地連線
+        if ($LocalConn -ne $null -and $LocalConn.State -eq [System.Data.ConnectionState]::Open) {
+            $LocalConn.Close()
+        }
+    }
+
+    $EndTime = Get-Date
+    $Duration = New-TimeSpan -Start $StartTime -End $EndTime
+    Write-Host "--- Synchronization finished in $($Duration.TotalSeconds) seconds. ---"
+    
+    # 執行休眠
+    Write-Host "Sleeping for $SleepSeconds seconds..."
+    Start-Sleep $SleepSeconds
 }
