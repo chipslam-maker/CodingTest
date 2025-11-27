@@ -1,6 +1,29 @@
 USE SSISDB;
 GO
+USE SSISDB;
+GO
 
+SELECT 
+    T1.execution_id,
+    T1.executable_id, -- 這是關鍵
+    E.package_name AS Main_Package_Name,
+    T1.execution_path,
+    T1.start_time,
+    T1.end_time,
+    T1.execution_duration AS Duration_ms,
+    CONVERT(DECIMAL(10, 2), T1.execution_duration / 1000.0) AS Duration_Seconds
+FROM
+    catalog.executable_statistics AS T1
+INNER JOIN
+    catalog.executions AS E 
+    ON T1.execution_id = E.execution_id
+WHERE
+    E.package_name = N'A.dtsx' -- 篩選主套件
+ORDER BY
+    T1.execution_id DESC, 
+    T1.start_time;
+
+    
 SELECT
     T1.execution_id,
     E.folder_name,
