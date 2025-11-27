@@ -10,52 +10,54 @@ CREATE TABLE dbo.QueueControlDates_Consolidated (
     lastprocessingdatetime DATETIME NOT NULL,
     
     -- 2. 你的新欄位：資料插入時間
-    data_inserttime DATETIME DEFAULT GETDATE() NOT NULL 
+    data_inserttime DATETIME DEFAULT GETDATE() NOT NULL, 
+    
+    -- 3. [新] 你的新欄位：記錄資料來自哪個遠端資料庫
+    SOURCE_DB_NAME NVARCHAR(128) NOT NULL 
 );
 
 -- 為了方便查詢，你可能需要一個非叢集索引
 CREATE NONCLUSTERED INDEX IX_QueueControlDates_Consolidated_SrcTable
-ON dbo.QueueControlDates_Consolidated (src, tablename);
-
+ON dbo.QueueControlDates_Consolidated (src, tablename, SOURCE_DB_NAME);
 
 # 設定變數
 # -----------------------------------------------------------
-$LocalServer = "你的本地伺服器名稱\實例名稱"  # 例如："(local)\SQLEXPRESS" 或 "MyLocalServer"
-$LocalDB = "你的目標資料庫名稱"          # 例如："MonitoringDB"
+$LocalServer = "你的本地伺服器名稱\實例名稱"
+$LocalDB = "你的目標資料庫名稱"
 $DestTable = "QueueControlDates_Consolidated"
 
 # 你的兩個來源伺服器列表
+# 現在 RemoteServers 字典中需要包含 DatabaseName
 $RemoteServers = @(
-    @{ ServerName = "SOURCE_SERVER_A"; DatabaseName = "YourRemoteDBName" },
-    @{ ServerName = "SOURCE_SERVER_B"; DatabaseName = "YourRemoteDBName" }
+    @{ ServerName = "SOURCE_SERVER_A"; DatabaseName = "DB_NAME_A" }, # <<-- 請替換為 Server A 的資料庫名稱
+    @{ ServerName = "SOURCE_SERVER_B"; DatabaseName = "DB_NAME_B" }  # <<-- 請替換為 Server B 的資料庫名稱
 )
 
-# 從來源提取資料的 T-SQL 查詢
+# 從來源提取資料的 T-SQL 查詢 (不變)
 $Query = "SELECT src, tablename, lastprocessingdatetime FROM dbo.QueueControlDates"
 
-# 本地插入的 T-SQL 語句 (Sequence 和 data_inserttime 會自動生成)
-$InsertSql = "INSERT INTO dbo.$DestTable (src, tablename, lastprocessingdatetime) VALUES (@src, @table, @time)"
+# [更新] 本地插入的 T-SQL 語句，現在包含 SOURCE_DB_NAME
+$InsertSql = "INSERT INTO dbo.$DestTable (src, tablename, lastprocessingdatetime, SOURCE_DB_NAME) VALUES (@src, @table, @time, @db_name)"
 
 # -----------------------------------------------------------
 
 # 建立本地伺服器連線物件
 $LocalConn = New-Object System.Data.SqlClient.SqlConnection
-$LocalConn.ConnectionString = "Server=$LocalServer;Database=$LocalDB;Integrated Security=True;" # 假設使用 Windows 驗證
+$LocalConn.ConnectionString = "Server=$LocalServer;Database=$LocalDB;Integrated Security=True;" 
 
 try {
     $LocalConn.Open()
     
     foreach ($Remote in $RemoteServers) {
-        Write-Host "--- Processing $($Remote.ServerName) ---"
+        Write-Host "--- Processing $($Remote.ServerName) / $($Remote.DatabaseName) ---"
         
         # 1. 從遠程伺服器提取資料
         try {
-            # 使用 Invoke-Sqlcmd 提取資料 (需要 SQL Server PowerShell 模組)
             $Data = Invoke-Sqlcmd -ServerInstance $Remote.ServerName -Database $Remote.DatabaseName -Query $Query -ErrorAction Stop
         }
         catch {
             Write-Error "Error fetching data from $($Remote.ServerName): $($_.Exception.Message)"
-            continue # 跳過此伺服器，繼續下一個
+            continue
         }
 
         # 2. 準備本地插入指令
@@ -63,10 +65,12 @@ try {
         $LocalCmd.Connection = $LocalConn
         $LocalCmd.CommandText = $InsertSql
         
-        # 定義參數
+        # 定義參數 (並新增 @db_name 參數)
         $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@src", [System.Data.SqlDbType]::NVarChar, 255)) | Out-Null
         $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@table", [System.Data.SqlDbType]::NVarChar, 255)) | Out-Null
         $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@time", [System.Data.SqlDbType]::DateTime)) | Out-Null
+        # [新增] 
+        $LocalCmd.Parameters.Add((New-Object System.Data.SqlClient.SqlParameter -ArgumentList "@db_name", [System.Data.SqlDbType]::NVarChar, 128)) | Out-Null
         
         $RowCount = 0
         
@@ -75,12 +79,14 @@ try {
             $LocalCmd.Parameters["@src"].Value = $Row.src
             $LocalCmd.Parameters["@table"].Value = $Row.tablename
             $LocalCmd.Parameters["@time"].Value = $Row.lastprocessingdatetime
+            # [新增] 傳入當前遠端資料庫的名稱
+            $LocalCmd.Parameters["@db_name"].Value = $Remote.DatabaseName 
             
             $LocalCmd.ExecuteNonQuery() | Out-Null
             $RowCount++
         }
         
-        Write-Host "Successfully inserted $RowCount rows from $($Remote.ServerName)."
+        Write-Host "Successfully inserted $RowCount rows from $($Remote.ServerName) / $($Remote.DatabaseName)."
     }
 }
 catch {
