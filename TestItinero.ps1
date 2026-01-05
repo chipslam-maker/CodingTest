@@ -39,7 +39,16 @@ try {
     # 範例：列出解讀後的資料 (可根據你的 JSON 結構調整)
     Write-Host "--- 檔案內容摘要 ---" -ForegroundColor Yellow
     $jsonObj | Format-Table # 或是直接用 $jsonObj
+
+    # 使用 [-1] 取得陣列中的最後一個元素
+    $lastItem = $jsonObj[-1]
     
+    $distance = $lastItem.properties.distance
+    $time = $lastItem.properties.time
+    
+    Write-Host "最後一筆距離: $distance" -ForegroundColor Cyan
+    Write-Host "最後一筆時間: $time" -ForegroundColor Cyan
+   
 }
 catch {
     Write-Host "請求失敗！" -ForegroundColor Red
