@@ -1,6 +1,12 @@
 # 1. 設定 URL
 $url = "http://ServerA/route/cal?lag=34.22,lat=0.21&lag=35.22,lat=0.23"
 
+# 模擬真實瀏覽器並明確要求 JSON
+Invoke-WebRequest -Uri $url `
+                  -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" `
+                  -Headers @{"Accept"="application/json"} `
+                  -UseBasicParsing
+
 # 2. 設定資料夾路徑與檔名
 $dirPath = "C:\TEMP"
 $dateStr = Get-Date -Format "yyyyMMdd"
