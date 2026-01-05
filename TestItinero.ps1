@@ -1,40 +1,47 @@
-# 1. 設定 URL
+# 1. 設定請求資訊
 $url = "http://ServerA/route/cal?lag=34.22,lat=0.21&lag=35.22,lat=0.23"
 
-# 模擬真實瀏覽器並明確要求 JSON
-Invoke-WebRequest -Uri $url `
-                  -UserAgent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" `
-                  -Headers @{"Accept"="application/json"} `
-                  -UseBasicParsing
-
-# 2. 設定資料夾路徑與檔名
+# 2. 設定儲存路徑與檔名 (discal_yyyymmdd.json)
 $dirPath = "C:\TEMP"
 $dateStr = Get-Date -Format "yyyyMMdd"
 $fileName = "discal_$($dateStr).json"
-$targetPath = Join-Path -ChildPath $fileName -Path $dirPath
+$targetPath = Join-Path -Path $dirPath -ChildPath $fileName
 
-# 3. 檢查資料夾是否存在，不存在則建立
+# 3. 確保 C:\TEMP 資料夾存在
 if (-not (Test-Path $dirPath)) {
     New-Item -Path $dirPath -ItemType Directory | Out-Null
+    Write-Host "已建立資料夾: $dirPath" -ForegroundColor Gray
 }
+
+# 4. 準備標頭資訊 (模擬瀏覽器)
+$headers = @{
+    "Accept" = "application/json"
+}
+$userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 try {
-    # 4. 發送請求並取得內容
-    Write-Host "正在請求資料..." -ForegroundColor Cyan
-    $response = Invoke-WebRequest -Uri $url -Method Get -UseBasicParsing
-
-    # 5. 將內容寫入指定的 C:\TEMP 檔案
-    # 使用 -Force 確保如果當天重複執行會直接覆蓋舊檔
-    $response.Content | Out-File -FilePath $targetPath -Encoding utf8 -Force
-    Write-Host "成功！JSON 已存至: $targetPath" -ForegroundColor Green
-
-    # 6. 解讀 JSON
-    $jsonObj = Get-Content -Path $targetPath | ConvertFrom-Json
+    Write-Host "正在發送請求至 ServerA..." -ForegroundColor Cyan
     
-    # 範例：顯示解讀後的物件結構
-    Write-Host "--- 解讀結果 ---" -ForegroundColor Yellow
-    $jsonObj
+    # 5. 發送請求
+    $response = Invoke-WebRequest -Uri $url `
+                                  -Method Get `
+                                  -Headers $headers `
+                                  -UserAgent $userAgent `
+                                  -UseBasicParsing
+
+    # 6. 將結果寫入檔案
+    $response.Content | Out-File -FilePath $targetPath -Encoding utf8 -Force
+    Write-Host "成功！JSON 已儲存至: $targetPath" -ForegroundColor Green
+
+    # 7. 解讀 JSON 內容供後續使用
+    $jsonObj = $response.Content | ConvertFrom-Json
+    
+    # 範例：列出解讀後的資料 (可根據你的 JSON 結構調整)
+    Write-Host "--- 檔案內容摘要 ---" -ForegroundColor Yellow
+    $jsonObj | Format-Table # 或是直接用 $jsonObj
+    
 }
 catch {
-    Write-Error "發生錯誤： $($_.Exception.Message)"
+    Write-Host "請求失敗！" -ForegroundColor Red
+    Write-Error $_.Exception.Message
 }
