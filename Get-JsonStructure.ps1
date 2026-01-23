@@ -27,3 +27,17 @@ function Get-JsonStructure {
 # 使用範例：
 # $response = Invoke-RestMethod ...
 Get-JsonStructure -Object $response
+
+# 1. 確保 $response 是已經 ConvertFrom-Json 的物件
+# 2. 展開 features 陣列，並深入 properties 取得 distance
+$allDistances = $response.features | ForEach-Object {
+    $_.properties.distance
+}
+
+# 3. 過濾掉可能的空值，並轉為數字 (Double)
+$numericDistances = $allDistances | Where-Object { $_ -ne $null } | ForEach-Object { [double]$_ }
+
+# 輸出結果看看
+Write-Host "總共抓到 $($numericDistances.Count) 個 distance 值"
+$maxDist = ($numericDistances | Measure-Object -Maximum).Maximum
+Write-Host "最大距離為: $maxDist" -ForegroundColor Cyan
