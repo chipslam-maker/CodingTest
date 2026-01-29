@@ -1,5 +1,5 @@
-/* SSIS Script Component - Advanced JSON Parsing & Async Parallel HTTP
-   Optimized for: Multi-loc GPS extraction and batch API calls
+/* Optimized SSIS Script Component - No External DLL Dependency
+   Using Regex for high-performance JSON extraction
 */
 
 using System;
@@ -9,8 +9,7 @@ using System.Net.Http;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Linq;
-using System.Text;
-using Newtonsoft.Json.Linq;
+using System.Text.RegularExpressions;
 
 public class ScriptMain : UserComponent
 {
@@ -21,7 +20,8 @@ public class ScriptMain : UserComponent
     {
         ServicePointManager.DefaultConnectionLimit = 100;
         ServicePointManager.Expect100Continue = false;
-        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+        // SQL 2017 environment often needs explicit TLS 1.2
+        ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; 
 
         httpClient = new HttpClient();
         httpClient.Timeout = TimeSpan.FromMinutes(3);
@@ -36,62 +36,26 @@ public class ScriptMain : UserComponent
 
     public override void Input0_ProcessInputRow(Input0Buffer Row)
     {
-        try
-        {
-            // 1. Parse the input JSON text to extract GPS coordinates
-            string jsonInput = Row.JsonColumn; // 假設你的輸入欄位叫 JsonColumn
-            string urlParameters = ExtractLocParameters(jsonInput);
-
-            // 2. Combine with Base URL
-            string baseUrl = "http://mapcaldistacne/hosting?";
-            string finalUrl = baseUrl + urlParameters;
-
-            _pendingTasks.Add(new ApiTaskItem
-            {
-                Id = Row.ID,
-                ConstructedUrl = finalUrl
-            });
-        }
-        catch (Exception ex)
-        {
-            // If JSON parsing fails before request
-            _pendingTasks.Add(new ApiTaskItem
-            {
-                Id = Row.ID,
-                MaxDistanceValue = "Pre-processing Error: " + ex.Message
-            });
-        }
-    }
-
-    // Helper method to parse your specific JSON structure from the image
-    private string ExtractLocParameters(string jsonText)
-    {
-        JArray items = JArray.Parse(jsonText);
+        // 1. Use Regex to extract coordinates from your specific JSON structure
+        // Looking for: "Value":"52.651010,1.261430"
+        string pattern = @"""Value"":""([\d\.-]+,[\d\.-]+)""";
+        var matches = Regex.Matches(Row.JsonColumn, pattern);
+        
         List<string> locs = new List<string>();
-
-        foreach (var item in items)
+        foreach (Match m in matches)
         {
-            if (item["Key"]?.ToString() == "loc")
-            {
-                // Access the nested Value object's Value field
-                string gpsCoord = item["Value"]?["Value"]?.ToString();
-                if (!string.IsNullOrEmpty(gpsCoord))
-                {
-                    locs.Add("loc=" + gpsCoord);
-                }
-            }
+            locs.Add("loc=" + m.Groups[1].Value);
         }
 
-        // Joins them with '&' to create: loc=52.65,1.26&loc=52.65,1.26...
-        return string.Join("&", locs);
+        string finalUrl = "http://mapcaldistacne/hosting?" + string.Join("&", locs);
+
+        _pendingTasks.Add(new ApiTaskItem { Id = Row.ID, ConstructedUrl = finalUrl });
     }
 
     public override void CreateNewOutputRows()
     {
-        // Execute HTTP requests in parallel
         RunParallelRequestsAsync().Wait();
 
-        // Output results
         foreach (var task in _pendingTasks)
         {
             Output0Buffer.AddRow();
@@ -104,7 +68,7 @@ public class ScriptMain : UserComponent
     {
         using (SemaphoreSlim semaphore = new SemaphoreSlim(20))
         {
-            var tasks = _pendingTasks.Where(t => t.MaxDistanceValue == null).Select(async item =>
+            var tasks = _pendingTasks.Select(async item =>
             {
                 await semaphore.WaitAsync();
                 try
@@ -112,39 +76,36 @@ public class ScriptMain : UserComponent
                     var response = await httpClient.GetAsync(item.ConstructedUrl);
                     if (response.IsSuccessStatusCode)
                     {
-                        string responseJson = await response.Content.ReadAsStringAsync();
-                        item.MaxDistanceValue = ParseMaxDistance(responseJson);
+                        string responseBody = await response.Content.ReadAsStringAsync();
+                        // 2. Use Regex to find all "distance":123.45 values
+                        item.MaxDistanceValue = GetMaxDistanceByRegex(responseBody);
                     }
                     else
                     {
                         item.MaxDistanceValue = "HTTP_" + (int)response.StatusCode;
                     }
                 }
-                catch (Exception ex)
-                {
-                    item.MaxDistanceValue = "Network Error: " + ex.Message;
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
+                catch (Exception ex) { item.MaxDistanceValue = "Error: " + ex.Message; }
+                finally { semaphore.Release(); }
             });
-
             await Task.WhenAll(tasks);
         }
     }
 
-    private string ParseMaxDistance(string json)
+    private string GetMaxDistanceByRegex(string json)
     {
-        try
+        // Matches "distance":201.41 or "distance":"201.41"
+        string pattern = @"""distance"":\s*""?([\d\.]+)""?";
+        var matches = Regex.Matches(json, pattern);
+        
+        double max = -1;
+        foreach (Match m in matches)
         {
-            JObject data = JObject.Parse(json);
-            var distances = data.SelectTokens("..distance")
-                                .Select(t => (double)t)
-                                .ToList();
-
-            return distances.Any() ? distances.Max().ToString() : "0";
+            if (double.TryParse(m.Groups[1].Value, out double val))
+            {
+                if (val > max) max = val;
+            }
         }
-        catch { return "Parse Error"; }
+        return max == -1 ? "0" : max.ToString();
     }
 }
