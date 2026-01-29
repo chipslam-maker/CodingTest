@@ -1,11 +1,10 @@
-/* Optimized SSIS Script Component - No External DLL Dependency
-   Using Regex for high-performance JSON extraction
+/* SSIS Script Component - Ultra Stable Version 
+   Compatible with SQL 2017 (No additional DLL references needed)
 */
 
 using System;
 using System.Collections.Generic;
 using System.Net;
-using System.Net.Http;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Linq;
@@ -13,19 +12,7 @@ using System.Text.RegularExpressions;
 
 public class ScriptMain : UserComponent
 {
-    private static readonly HttpClient httpClient;
     private List<ApiTaskItem> _pendingTasks = new List<ApiTaskItem>();
-
-    static ScriptMain()
-    {
-        ServicePointManager.DefaultConnectionLimit = 100;
-        ServicePointManager.Expect100Continue = false;
-        // SQL 2017 environment often needs explicit TLS 1.2
-        ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; 
-
-        httpClient = new HttpClient();
-        httpClient.Timeout = TimeSpan.FromMinutes(3);
-    }
 
     private class ApiTaskItem
     {
@@ -34,10 +21,18 @@ public class ScriptMain : UserComponent
         public string MaxDistanceValue { get; set; }
     }
 
+    public override void PreExecute()
+    {
+        base.PreExecute();
+        // 強制使用 TLS 1.2，這對 SQL 2017 連結現代 API 至關重要
+        ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072;
+        // 增加連線限制
+        ServicePointManager.DefaultConnectionLimit = 100;
+    }
+
     public override void Input0_ProcessInputRow(Input0Buffer Row)
     {
-        // 1. Use Regex to extract coordinates from your specific JSON structure
-        // Looking for: "Value":"52.651010,1.261430"
+        // 1. 使用 Regex 從你的 JSON 文字中提取座標 (與之前邏輯相同)
         string pattern = @"""Value"":""([\d\.-]+,[\d\.-]+)""";
         var matches = Regex.Matches(Row.JsonColumn, pattern);
         
@@ -48,14 +43,15 @@ public class ScriptMain : UserComponent
         }
 
         string finalUrl = "http://mapcaldistacne/hosting?" + string.Join("&", locs);
-
         _pendingTasks.Add(new ApiTaskItem { Id = Row.ID, ConstructedUrl = finalUrl });
     }
 
     public override void CreateNewOutputRows()
     {
-        RunParallelRequestsAsync().Wait();
+        // 2. 執行非同步請求 (雖然 WebClient 是同步的，但我們用 Task.Run 讓它並行)
+        RunParallelRequests();
 
+        // 3. 輸出結果
         foreach (var task in _pendingTasks)
         {
             Output0Buffer.AddRow();
@@ -64,37 +60,45 @@ public class ScriptMain : UserComponent
         }
     }
 
-    private async Task RunParallelRequestsAsync()
+    private void RunParallelRequests()
     {
+        // 限制併發數為 20
         using (SemaphoreSlim semaphore = new SemaphoreSlim(20))
         {
-            var tasks = _pendingTasks.Select(async item =>
+            List<Task> tasks = new List<Task>();
+
+            foreach (var item in _pendingTasks)
             {
-                await semaphore.WaitAsync();
-                try
+                semaphore.Wait();
+                var task = Task.Run(() =>
                 {
-                    var response = await httpClient.GetAsync(item.ConstructedUrl);
-                    if (response.IsSuccessStatusCode)
+                    try
                     {
-                        string responseBody = await response.Content.ReadAsStringAsync();
-                        // 2. Use Regex to find all "distance":123.45 values
-                        item.MaxDistanceValue = GetMaxDistanceByRegex(responseBody);
+                        using (WebClient client = new WebClient())
+                        {
+                            // 使用傳統 WebClient，避免 System.Net.Http 的引用問題
+                            string responseBody = client.DownloadString(item.ConstructedUrl);
+                            item.MaxDistanceValue = GetMaxDistanceByRegex(responseBody);
+                        }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        item.MaxDistanceValue = "HTTP_" + (int)response.StatusCode;
+                        item.MaxDistanceValue = "Error: " + ex.Message;
                     }
-                }
-                catch (Exception ex) { item.MaxDistanceValue = "Error: " + ex.Message; }
-                finally { semaphore.Release(); }
-            });
-            await Task.WhenAll(tasks);
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                });
+                tasks.Add(task);
+            }
+            Task.WaitAll(tasks.ToArray());
         }
     }
 
     private string GetMaxDistanceByRegex(string json)
     {
-        // Matches "distance":201.41 or "distance":"201.41"
+        // 從回傳的 JSON 提取最大 distance
         string pattern = @"""distance"":\s*""?([\d\.]+)""?";
         var matches = Regex.Matches(json, pattern);
         
