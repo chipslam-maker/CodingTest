@@ -60,41 +60,33 @@ public class ScriptMain : UserComponent
         }
     }
 
-    private void RunParallelRequests()
-    {
-        // 限制併發數為 20
-        using (SemaphoreSlim semaphore = new SemaphoreSlim(20))
-        {
-            List<Task> tasks = new List<Task>();
+private void RunParallelRequests()
+{
+    var options = new ParallelOptions { MaxDegreeOfParallelism = 20 };
 
-            foreach (var item in _pendingTasks)
+    Parallel.ForEach(_pendingTasks, options, (item) =>
+    {
+        try
+        {
+            // 使用我們自定義的帶有 Timeout 的版本
+            using (var client = new WebClientWithTimeout())
             {
-                semaphore.Wait();
-                var task = Task.Run(() =>
-                {
-                    try
-                    {
-                        using (WebClient client = new WebClient())
-                        {
-                            // 使用傳統 WebClient，避免 System.Net.Http 的引用問題
-                            string responseBody = client.DownloadString(item.ConstructedUrl);
-                            item.MaxDistanceValue = GetMaxDistanceByRegex(responseBody);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        item.MaxDistanceValue = "Error: " + ex.Message;
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                });
-                tasks.Add(task);
+                // 現在如果 API 超過 30 秒沒回傳，會直接跳到 catch
+                string responseBody = client.DownloadString(item.ConstructedUrl);
+                item.MaxDistanceValue = GetMaxDistanceByRegex(responseBody);
             }
-            Task.WaitAll(tasks.ToArray());
         }
-    }
+        catch (WebException webEx)
+        {
+            // 如果是 Timeout，這裡會捕捉到
+            item.MaxDistanceValue = "Timeout/Network Error: " + webEx.Status;
+        }
+        catch (Exception ex)
+        {
+            item.MaxDistanceValue = "Error: " + ex.Message;
+        }
+    });
+}
 
     private string GetMaxDistanceByRegex(string json)
     {
@@ -111,5 +103,21 @@ public class ScriptMain : UserComponent
             }
         }
         return max == -1 ? "0" : max.ToString();
+    }
+}
+
+/* 1. 定義一個帶有 Timeout 功能的 WebClient */
+private class WebClientWithTimeout : WebClient
+{
+    protected override WebRequest GetWebRequest(Uri address)
+    {
+        WebRequest request = base.GetWebRequest(address);
+        if (request != null)
+        {
+            // 設定 Timeout 時間（單位：毫秒）
+            // 例如 30000 代表 30 秒
+            request.Timeout = 30000; 
+        }
+        return request;
     }
 }
