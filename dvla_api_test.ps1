@@ -75,8 +75,15 @@ foreach ($row in $vehicles) {
         $co2 = $data.co2Emissions
         $make = $data.make
         
-        # 3. 更新回資料庫 (假設你有對應的欄位)
-        $updateQuery = "UPDATE VehicleInventory SET CO2_Emissions = '$co2', Make = '$make', Processed = 1 WHERE RegistrationNumber = '$vrm'"
+        # 3. 更新回資料庫 (假設你有對應的欄位)# 修正後的更新語句 (對應你的 Create Table Script)
+$updateQuery = "UPDATE VehicleInventory SET 
+                CO2Emissions_G_KM = '$co2', 
+                Make = '$make', 
+                FuelType = '$($data.fuelType)',
+                YearOfManufacture = '$($data.yearOfManufacture)',
+                Processed = 1, 
+                LastUpdated = GETDATE() 
+                WHERE RegistrationNumber = '$vrm'"
         Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQuery
         
         Write-Host "✅ 已更新: $vrm ($make, $co2 g/km)" -ForegroundColor Green
