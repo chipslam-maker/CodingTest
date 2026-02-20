@@ -71,19 +71,25 @@ foreach ($row in $vehicles) {
     $data = Get-VehicleData -vrm $vrm
     
     if ($data) {
-        # 2. 取得資料 (例如 CO2 排放)
-        $co2 = $data.co2Emissions
-        $make = $data.make
-        
-        # 3. 更新回資料庫 (假設你有對應的欄位)# 修正後的更新語句 (對應你的 Create Table Script)
-$updateQuery = "UPDATE VehicleInventory SET 
-                CO2Emissions_G_KM = '$co2', 
-                Make = '$make', 
-                FuelType = '$($data.fuelType)',
-                YearOfManufacture = '$($data.yearOfManufacture)',
-                Processed = 1, 
-                LastUpdated = GETDATE() 
-                WHERE RegistrationNumber = '$vrm'"
+$vrm = $row.RegistrationNumber
+$make = $data.make -replace "'", "''" # 處理品牌名稱中有單引號的情況，如 O'Reilly (雖然車廠少見)
+$co2 = $data.co2Emissions
+$fuel = $data.fuelType
+$year = $data.yearOfManufacture
+
+$updateQuery = @"
+UPDATE VehicleInventory 
+SET 
+    Make = '$make',
+    FuelType = '$fuel',
+    YearOfManufacture = $year,
+    CO2Emissions_G_KM = $(if($co2){$co2}else{"NULL"}),
+    Processed = 1,
+    LastUpdated = GETDATE()
+WHERE RegistrationNumber = '$vrm'
+"@
+
+
         Invoke-Sqlcmd -ConnectionString $connectionString -Query $updateQuery
         
         Write-Host "✅ 已更新: $vrm ($make, $co2 g/km)" -ForegroundColor Green
