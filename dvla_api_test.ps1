@@ -77,6 +77,24 @@ $co2 = $data.co2Emissions
 $fuel = $data.fuelType
 $year = $data.yearOfManufacture
 
+# 根據 FuelType 定義係數
+$emissionsFactor = if ($fuel -eq "PETROL") { 2310 } else { 2680 }
+
+# 計算 L/100km
+if ($co2 -gt 0) {
+    $calculatedLPer100km = ($co2 * 100) / $emissionsFactor
+    # 轉換回英國常用的 MPG (Miles Per Gallon)
+    # 公式: 282.48 / (L/100km) = MPG
+    $estimatedMPG = 282.48 / $calculatedLPer100km
+} else {
+    $estimatedMPG = "NULL"
+}
+
+# 更新 SQL 時加入這些估算值
+$updateQuery = "UPDATE VehicleInventory SET 
+                CO2Emissions_G_KM = $co2, 
+                CombinedMPG = $estimatedMPG,
+
 $updateQuery = @"
 UPDATE VehicleInventory 
 SET 
